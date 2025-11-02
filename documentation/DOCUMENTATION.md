@@ -148,7 +148,3 @@ This project uses GitHub Actions for Continuous Integration (CI). The pipeline e
 
 ### Troubleshooting
 - If the pipeline fails, check the logs in the "Actions" tab on GitHub.
-- Ensure `requirements.txt` is up-to-date with all dependencies.
-- Verify that the script runs locally before pushing changes.
-
-For further assistance, refer to the [GitHub Actions documentation](https://docs.github.com/en/actions).
