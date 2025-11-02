@@ -1,150 +1,205 @@
 #!/usr/bin/env python
 # coding: utf-8
 
+import os
+import argparse
+import logging
+from datetime import datetime
 
-#imports and load the CSV
 import pandas as pd
-import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.preprocessing import MinMaxScaler
-import os
-from datetime import datetime
+
+plt.rcParams['figure.figsize'] = (8, 5)
 
 
-#Make plots display bigger in the notebook
-plt.rcParams['figure.figsize'] = (8,5)
-
-#Load dataset
-df = pd.read_csv("movies.csv")
-
-#Showing the first few rows and basic info
-print("First 5 rows:")
-print(df.head())
-print("\nInfo:")
-print(df.info())
-print("\nMissing values per column:")
-print(df.isna().sum())
-
-#remove duplicates and clean simple text issues
-print("Initial shape:", df.shape)
-#Remove exact duplicates
-dupes = df.duplicated().sum()
-print(f"Duplicates found: {dupes}")
-df = df.drop_duplicates()
-print("Shape after dropping duplicates:", df.shape)
-
-#Clean newline characters and strip spaces in text columns
-text_cols = ['MOVIES', 'GENRE', 'ONE-LINE', 'STARS']
-for col in text_cols:
-    if col in df.columns:
-        df[col] = df[col].astype(str).str.replace('\n', ' ', regex=True).str.strip()
-
-#Show a small sample after cleaning
-print(df.head())
+# Replaced ad-hoc script with a safer, CLI-driven implementation.
 
 
-#extract year number (4-digit) from YEAR column
-if 'YEAR' in df.columns:
-    df['YEAR'] = df['YEAR'].astype(str).str.extract(r'(\d{4})')  # get 4-digit year
-    df['YEAR'] = pd.to_numeric(df['YEAR'], errors='coerce')
-
-print("YEAR column unique sample:")
-print(df['YEAR'].dropna().unique()[:10])
+def setup_logging(verbose: bool = False):
+    level = logging.DEBUG if verbose else logging.INFO
+    logging.basicConfig(level=level, format="%(asctime)s %(levelname)s: %(message)s")
 
 
-#convert VOTES and Gross to numeric
-if 'VOTES' in df.columns:
-    df['VOTES'] = df['VOTES'].astype(str).str.replace(',', '', regex=True)
-    df['VOTES'] = pd.to_numeric(df['VOTES'], errors='coerce')
-
-if 'Gross' in df.columns:
-    # Remove currency symbols and commas; if empty make 0
-    df['Gross'] = df['Gross'].astype(str).str.replace('[^0-9.]', '', regex=True)
-    df['Gross'] = pd.to_numeric(df['Gross'], errors='coerce').fillna(0)
-
-print(df[['VOTES','Gross']].head())
-
-
-#handle missing values: numeric columns -> median, categorical -> mode
-numeric_cols = ['RATING', 'VOTES', 'RunTime', 'Gross']
-for col in numeric_cols:
-    if col in df.columns:
-        med = df[col].median()
-        df[col] = df[col].fillna(med)
-        print(f"Filled missing {col} with median = {med}")
-
-#For GENRE fill with mode if missing
-if 'GENRE' in df.columns:
-    mode_genre = df['GENRE'].mode()[0]
-    df['GENRE'] = df['GENRE'].fillna(mode_genre)
-    print("Filled missing GENRE with mode:", mode_genre)
+def safe_median_fill(series: pd.Series, logger: logging.Logger):
+    """Fill NaNs in numeric series with median when possible.
+    If median is NaN (e.g., all values missing), leave as-is and log.
+    """
+    try:
+        median = series.median()
+        if pd.isna(median):
+            logger.debug("Median is NaN for column '%s' - skipping median fill", series.name)
+            return series
+        return series.fillna(median)
+    except Exception:
+        logger.exception("Failed to compute/fill median for %s", series.name)
+        return series
 
 
-#feature engineering: number of stars & number of genres
-if 'STARS' in df.columns:
-    df['num_stars'] = df['STARS'].apply(lambda x: len([s for s in str(x).split(',') if s.strip()]) )
+def clean_dataframe(df: pd.DataFrame, logger: logging.Logger) -> pd.DataFrame:
+    df = df.copy()
 
-if 'GENRE' in df.columns:
-    df['num_genres'] = df['GENRE'].apply(lambda x: len([g for g in str(x).split(',') if g.strip()]) )
+    logger.debug("Starting shape: %s", df.shape)
+    # Drop duplicate rows
+    dup_count = df.duplicated().sum()
+    if dup_count:
+        logger.info("Dropping %d duplicate rows", int(dup_count))
+        df = df.drop_duplicates()
 
-#show new features
-print(df[['STARS','num_stars','GENRE','num_genres']].head())
+    # Clean text columns
+    text_cols = ['MOVIES', 'GENRE', 'ONE-LINE', 'STARS']
+    for col in text_cols:
+        if col in df.columns:
+            # Convert to string, remove newlines, trim
+            df[col] = df[col].astype(str).str.replace('\n', ' ', regex=True).str.strip()
+
+    # Extract 4-digit year
+    if 'YEAR' in df.columns:
+        df['YEAR'] = df['YEAR'].astype(str).str.extract(r'(\d{4})')
+        df['YEAR'] = pd.to_numeric(df['YEAR'], errors='coerce')
+
+    # Convert VOTES (remove commas)
+    if 'VOTES' in df.columns:
+        df['VOTES'] = df['VOTES'].astype(str).str.replace(',', '', regex=True)
+        df['VOTES'] = pd.to_numeric(df['VOTES'], errors='coerce')
+
+    # Clean Gross (remove non-numeric characters)
+    if 'Gross' in df.columns:
+        df['Gross'] = df['Gross'].astype(str).str.replace('[^0-9.]', '', regex=True)
+        df['Gross'] = pd.to_numeric(df['Gross'], errors='coerce')
+        # Do not blindly fill all NaNs with 0; leave NaN to be handled by median fill below if appropriate
+
+    # Handle missing values for numeric columns safely
+    numeric_cols = ['RATING', 'VOTES', 'RunTime', 'Gross']
+    for col in numeric_cols:
+        if col in df.columns:
+            df[col] = safe_median_fill(df[col], logger)
+
+    # Fill GENRE with mode if possible
+    if 'GENRE' in df.columns:
+        try:
+            mode_vals = df['GENRE'].mode()
+            if len(mode_vals) > 0 and pd.notna(mode_vals.iloc[0]):
+                df['GENRE'] = df['GENRE'].fillna(mode_vals.iloc[0])
+            else:
+                df['GENRE'] = df['GENRE'].fillna('Unknown')
+        except Exception:
+            logger.exception("Failed to compute mode for GENRE; filling missing with 'Unknown'")
+            df['GENRE'] = df['GENRE'].fillna('Unknown')
+
+    # Feature engineering
+    if 'STARS' in df.columns:
+        df['num_stars'] = df['STARS'].apply(lambda x: len([s for s in str(x).split(',') if s.strip()]))
+
+    if 'GENRE' in df.columns:
+        df['num_genres'] = df['GENRE'].apply(lambda x: len([g for g in str(x).split(',') if g.strip()]))
+
+    # Clip RunTime extremes at 99th percentile
+    if 'RunTime' in df.columns and df['RunTime'].dropna().size > 0:
+        try:
+            upper = df['RunTime'].quantile(0.99)
+            df.loc[df['RunTime'] > upper, 'RunTime'] = upper
+        except Exception:
+            logger.exception("Failed to compute/clip RunTime quantile")
+
+    # Scale numeric columns using MinMaxScaler when there is valid data
+    scaler_cols = [c for c in ['RATING', 'VOTES', 'RunTime', 'Gross'] if c in df.columns]
+    if scaler_cols:
+        try:
+            # Only scale columns that have at least one non-NaN value
+            valid_cols = [c for c in scaler_cols if df[c].dropna().size > 0]
+            if valid_cols:
+                scaler = MinMaxScaler()
+                df[valid_cols] = scaler.fit_transform(df[valid_cols].astype(float))
+            else:
+                logger.debug("No valid numeric columns found for scaling: %s", scaler_cols)
+        except Exception:
+            logger.exception("Failed during MinMax scaling")
+
+    logger.debug("Finished shape: %s", df.shape)
+    return df
 
 
-#clip extreme RunTime values at 99th percentile
-if 'RunTime' in df.columns:
-    upper = df['RunTime'].quantile(0.99)
-    print("99th percentile RunTime:", upper)
-    # Clip values higher than this to the 99th percentile
-    df.loc[df['RunTime'] > upper, 'RunTime'] = upper
-    print("Applied clipping to RunTime.")
+def safe_plot(df: pd.DataFrame, filename: str, no_plot: bool, logger: logging.Logger):
+    if no_plot:
+        logger.debug("Skipping plotting (no_plot=True)")
+        return
+
+    try:
+        sns.heatmap(df.isna(), cbar=False)
+        plt.title(f"Missing Values After Cleaning: {filename}")
+        plt.show()
+
+        if 'RATING' in df.columns:
+            sns.histplot(df['RATING'].dropna(), bins=20)
+            plt.title(f"Rating Distribution (scaled): {filename}")
+            plt.show()
+
+        if 'RunTime' in df.columns:
+            sns.boxplot(x=df['RunTime'].dropna())
+            plt.title(f"RunTime (after clipping): {filename}")
+            plt.show()
+    except Exception:
+        logger.exception("Plotting failed - continuing without plots")
 
 
-#scale numeric columns so models will behave better
-scaler_cols = [c for c in ['RATING','VOTES','RunTime','Gross'] if c in df.columns]
-if scaler_cols:
-    scaler = MinMaxScaler()
-    df[scaler_cols] = scaler.fit_transform(df[scaler_cols])
-    print("Scaled columns:", scaler_cols)
-    print(df[scaler_cols].describe().T)
+def process_file(input_path: str, cleaned_folder: str, no_plot: bool, logger: logging.Logger) -> str:
+    logger.info("Processing file: %s", input_path)
+    try:
+        df = pd.read_csv(input_path)
+    except Exception:
+        logger.exception("Failed to read CSV: %s", input_path)
+        return ""
+
+    logger.info("Initial shape: %s", df.shape)
+
+    df_clean = clean_dataframe(df, logger)
+
+    # Prepare output path
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    base = os.path.splitext(os.path.basename(input_path))[0]
+    output_filename = f"{base}_cleaned_{timestamp}.csv"
+    output_path = os.path.join(cleaned_folder, output_filename)
+
+    try:
+        df_clean.to_csv(output_path, index=False)
+        logger.info("Saved cleaned file to: %s", output_path)
+    except Exception:
+        logger.exception("Failed to save cleaned CSV to %s", output_path)
+
+    # Optional plotting
+    safe_plot(df_clean, os.path.basename(input_path), no_plot, logger)
+
+    logger.debug("First 5 rows:\n%s", df_clean.head(5).to_string())
+    return output_path
 
 
-#final checks and save cleaned file
-print("Final shape:", df.shape)
-print("Missing values after cleaning:")
-print(df.isna().sum())
+def main(argv=None):
+    parser = argparse.ArgumentParser(description="Clean movie CSV files in a folder and write cleaned versions to an output folder.")
+    parser.add_argument('--uncleaned_folder', default='uncleaned_files', help='Input folder with raw CSV files')
+    parser.add_argument('--cleaned_folder', default='cleaned_files', help='Output folder for cleaned CSV files')
+    parser.add_argument('--no-plot', action='store_true', help='Disable plotting (useful for headless runs)')
+    parser.add_argument('--verbose', action='store_true', help='Enable verbose logging')
+    args = parser.parse_args(argv)
 
-#Save cleaned CSV
-df.to_csv("cleaned_files/movies_cleaned.csv", index=False)
-print("Saved cleaned dataset as movies_cleaned.csv in cleaned_files folder.")
+    setup_logging(args.verbose)
+    logger = logging.getLogger()
 
-#putting date and time with each file
-from datetime import datetime
+    # Ensure folders exist
+    os.makedirs(args.uncleaned_folder, exist_ok=True)
+    os.makedirs(args.cleaned_folder, exist_ok=True)
 
-timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-output_path = os.path.join("cleaned_files", f"movies_cleaned_{timestamp}.csv")
-df.to_csv(output_path, index=False)
+    found = False
+    for filename in sorted(os.listdir(args.uncleaned_folder)):
+        if filename.lower().endswith('.csv'):
+            found = True
+            input_path = os.path.join(args.uncleaned_folder, filename)
+            process_file(input_path, args.cleaned_folder, args.no_plot, logger)
+
+    if not found:
+        logger.warning("No CSV files found in %s", args.uncleaned_folder)
 
 
-
-#visualizations
-# Missing values heatmap (after cleaning)
-sns.heatmap(df.isna(), cbar=False)
-plt.title("Missing Values After Cleaning")
-plt.show()
-
-#Rating distribution
-if 'RATING' in df.columns:
-    sns.histplot(df['RATING'], bins=20)
-    plt.title("Rating Distribution (scaled)")
-    plt.show()
-
-#RunTime boxplot
-if 'RunTime' in df.columns:
-    sns.boxplot(x=df['RunTime'])
-    plt.title("RunTime (after clipping)")
-    plt.show()
-
-#Show a small sample of cleaned data
-print(df.head(10))
+if __name__ == '__main__':
+    main()

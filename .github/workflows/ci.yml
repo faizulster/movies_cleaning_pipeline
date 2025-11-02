@@ -1,0 +1,45 @@
+name: CI Pipeline
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.8'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+
+    - name: Run script on sample data
+      run: |
+        mkdir -p uncleaned_files cleaned_files
+        echo "MOVIES,YEAR,GENRE,RATING,ONE-LINE,STARS,VOTES,RunTime,Gross" > uncleaned_files/sample.csv
+        echo "Sample Movie,2021,Action,8.5,An action-packed movie,Star1,1000,120,500000" >> uncleaned_files/sample.csv
+        python movies_cleaning.py --no-plot --verbose
+
+    - name: Verify output
+      run: |
+        if [ ! -f cleaned_files/sample_cleaned_*.csv ]; then
+          echo "Cleaned file not found!" && exit 1
+        fi
+
+    - name: Linting (optional)
+      run: |
+        echo "Linting step can be added here if needed."
+
